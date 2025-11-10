@@ -10,25 +10,43 @@ const breadcrumbs: BreadcrumbItem[] = [
   { title: 'Absensi Face Recognition', href: '/attendance/face-recognition' },
 ];
 
-// Mock data - dalam real implementation, ini dari API
-const MOCK_STUDENTS: Student[] = [
-  {
-    id: '1',
-    nim: '2022071001',
-    name: 'Ahmad Rizki',
-    program: 'Teknik Informatika',
-    semester: 6,
-    photo: '/images/students/student1.jpg'
-  },
-  {
-    id: '2', 
-    nim: '2022071002',
-    name: 'Sarah Wijaya',
-    program: 'Sistem Informasi',
-    semester: 5,
-    photo: '/images/students/student2.jpg'
-  }
-];
+// Types
+interface Student {
+  id: string;
+  nim: string;
+  name: string;
+  program: string;
+  semester: number;
+  photo: string;
+  face_descriptor?: Float32Array;
+}
+
+interface AttendanceRecord {
+  id: string;
+  studentId: string;
+  studentName: string;
+  nim: string;
+  timestamp: Date;
+  status: 'present' | 'late' | 'absent';
+  confidence: number;
+}
+
+interface FaceRecognitionState {
+  isCameraActive: boolean;
+  isLoading: boolean;
+  isModelLoaded: boolean;
+  attendanceStatus: 'idle' | 'detecting' | 'success' | 'error' | 'no_face';
+  errorMessage: string;
+  detectedStudent: Student | null;
+  attendanceHistory: AttendanceRecord[];
+  stats: {
+    totalStudents: number;
+    presentToday: number;
+    lateToday: number;
+    absentToday: number;
+    attendanceRate: number;
+  };
+}
 
 export default function FaceRecognitionAttendance() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -52,11 +70,12 @@ export default function FaceRecognitionAttendance() {
     }
   });
 
-  // Load FaceAPI models
+  // Load FaceAPI models dari public/models
   const loadModels = useCallback(async () => {
     try {
       setState(prev => ({ ...prev, isLoading: true }));
       
+      // Pastikan folder models ada di public/models
       const MODEL_URL = '/models';
       
       await Promise.all([
@@ -73,7 +92,7 @@ export default function FaceRecognitionAttendance() {
       setState(prev => ({ 
         ...prev, 
         isLoading: false, 
-        errorMessage: 'Gagal memuat model AI' 
+        errorMessage: 'Gagal memuat model AI. Pastikan folder models ada di public/models' 
       }));
     }
   }, []);
@@ -163,25 +182,26 @@ export default function FaceRecognitionAttendance() {
       } catch (error) {
         console.error('Face detection error:', error);
       }
-    }, 1000); // Check every second
+    }, 1000);
   };
 
   // Face recognition logic
   const processFaceRecognition = async (faceDescriptor: Float32Array) => {
     try {
-      // In real implementation, compare with stored face descriptors from database
-      const matchedStudent = await recognizeFace(faceDescriptor);
+      const response = await axios.post('/attendance/recognize-face', {
+        descriptor: Array.from(faceDescriptor)
+      });
       
-      if (matchedStudent) {
+      if (response.data.success && response.data.student) {
         setState(prev => ({ 
           ...prev, 
           attendanceStatus: 'success', 
-          detectedStudent: matchedStudent,
+          detectedStudent: response.data.student,
           isLoading: false 
         }));
         
         // Save attendance record
-        await saveAttendanceRecord(matchedStudent);
+        await saveAttendanceRecord(response.data.student);
         
         // Stop detection after success
         if (detectionIntervalRef.current) {
@@ -192,6 +212,12 @@ export default function FaceRecognitionAttendance() {
         setTimeout(() => {
           resetRecognition();
         }, 5000);
+      } else {
+        setState(prev => ({ 
+          ...prev, 
+          attendanceStatus: 'error',
+          errorMessage: response.data.message || 'Wajah tidak dikenali' 
+        }));
       }
     } catch (error) {
       console.error('Face recognition error:', error);
@@ -203,64 +229,41 @@ export default function FaceRecognitionAttendance() {
     }
   };
 
-  // Face recognition matching (simplified - replace with real matching logic)
-  const recognizeFace = async (descriptor: Float32Array): Promise<Student | null> => {
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // Mock recognition - in real app, compare with database descriptors
-    const randomStudent = MOCK_STUDENTS[Math.floor(Math.random() * MOCK_STUDENTS.length)];
-    
-    // Simulate confidence score
-    const confidence = Math.random() * 0.3 + 0.7; // 0.7 - 1.0
-    
-    if (confidence > 0.8) {
-      return randomStudent;
-    }
-    
-    return null;
-  };
-
   // Save attendance record
   const saveAttendanceRecord = async (student: Student) => {
     try {
-      const record: AttendanceRecord = {
-        id: Date.now().toString(),
-        studentId: student.id,
-        studentName: student.name,
-        nim: student.nim,
-        timestamp: new Date(),
-        status: new Date().getHours() > 8 ? 'late' : 'present',
+      const response = await axios.post('/attendance/record', {
+        student_id: student.id,
         confidence: 0.95
-      };
+      });
       
-      // Simulate API call
-      await axios.post('/api/attendance', record);
-      
-      // Update local state
-      setState(prev => ({
-        ...prev,
-        attendanceHistory: [record, ...prev.attendanceHistory.slice(0, 9)]
-      }));
-      
-      updateStatistics();
+      if (response.data.success) {
+        // Update local state
+        setState(prev => ({
+          ...prev,
+          attendanceHistory: [response.data.record, ...prev.attendanceHistory.slice(0, 9)]
+        }));
+        
+        loadStatistics();
+      }
     } catch (error) {
       console.error('Error saving attendance:', error);
     }
   };
 
-  // Update statistics
-  const updateStatistics = () => {
-    setState(prev => ({
-      ...prev,
-      stats: {
-        totalStudents: MOCK_STUDENTS.length,
-        presentToday: prev.stats.presentToday + 1,
-        lateToday: new Date().getHours() > 8 ? prev.stats.lateToday + 1 : prev.stats.lateToday,
-        absentToday: 0,
-        attendanceRate: ((prev.stats.presentToday + 1) / MOCK_STUDENTS.length) * 100
+  // Load statistics
+  const loadStatistics = async () => {
+    try {
+      const response = await axios.get('/attendance/statistics');
+      if (response.data.success) {
+        setState(prev => ({
+          ...prev,
+          stats: response.data.statistics
+        }));
       }
-    }));
+    } catch (error) {
+      console.error('Error loading statistics:', error);
+    }
   };
 
   // Reset recognition
@@ -333,23 +336,22 @@ export default function FaceRecognitionAttendance() {
   useEffect(() => {
     loadModels();
     loadAttendanceHistory();
+    loadStatistics();
   }, []);
 
   const loadAttendanceHistory = async () => {
-    // Simulate API call
-    const mockHistory: AttendanceRecord[] = [
-      {
-        id: '1',
-        studentId: '1',
-        studentName: 'Ahmad Rizki',
-        nim: '2022071001',
-        timestamp: new Date('2024-01-16T08:15:00'),
-        status: 'present',
-        confidence: 0.92
+    try {
+      const response = await axios.get('/attendance/history');
+      if (response.data.success) {
+        const history = response.data.history.map((record: any) => ({
+          ...record,
+          timestamp: new Date(record.timestamp)
+        }));
+        setState(prev => ({ ...prev, attendanceHistory: history }));
       }
-    ];
-    
-    setState(prev => ({ ...prev, attendanceHistory: mockHistory }));
+    } catch (error) {
+      console.error('Error loading attendance history:', error);
+    }
   };
 
   // Cleanup
@@ -667,7 +669,7 @@ export default function FaceRecognitionAttendance() {
                   <tr key={record.id}>
                     <td>
                       <div className="student-cell">
-                        <img src={MOCK_STUDENTS.find(s => s.id === record.studentId)?.photo || ''} 
+                        <img src={`/storage/${record.studentId}.jpg`} 
                              alt={record.studentName} 
                              className="student-thumb" />
                         {record.studentName}
