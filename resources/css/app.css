@@ -155,3 +155,239 @@
         @apply bg-background text-foreground;
     }
 }
+
+/* Face Recognition Real Styles */
+.hero-attendance {
+  position: relative;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 80px 0 120px;
+  overflow: hidden;
+}
+
+.tech-badges {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.tech-badge {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  backdrop-filter: blur(10px);
+}
+
+/* Model Status */
+.model-status {
+  margin-top: 1rem;
+}
+
+.status-badge {
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.status-badge.loaded {
+  background: #c6f6d5;
+  color: #276749;
+}
+
+.status-badge.loading {
+  background: #fed7d7;
+  color: #c53030;
+}
+
+/* Camera Section Enhancements */
+.camera-active {
+  position: relative;
+  width: 100%;
+  height: 400px;
+}
+
+.detection-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.detection-status {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  display: flex;
+  justify-content: center;
+}
+
+.status-detecting, .status-no-face {
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Loading States */
+.loading-bar {
+  width: 100%;
+  height: 4px;
+  background: #e2e8f0;
+  border-radius: 2px;
+  margin-top: 0.5rem;
+  overflow: hidden;
+}
+
+.loading-progress {
+  height: 100%;
+  background: linear-gradient(90deg, #4299e1, #667eea);
+  animation: loading 2s ease-in-out infinite;
+}
+
+@keyframes loading {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Student Avatar */
+.student-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 3px solid #e2e8f0;
+}
+
+.student-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Confidence Bar */
+.confidence-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #f7fafc;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  position: relative;
+}
+
+.confidence-fill {
+  height: 6px;
+  background: linear-gradient(90deg, #48bb78, #68d391);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Student Cell in Table */
+.student-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.student-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Enhanced Instructions */
+.instructions-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.instructions-list li:last-child {
+  border-bottom: none;
+}
+
+.instructions-list li i {
+  color: #4299e1;
+  margin-top: 0.25rem;
+  flex-shrink: 0;
+}
+
+.instructions-list li div {
+  flex: 1;
+}
+
+.instructions-list li strong {
+  display: block;
+  color: #2d3748;
+  margin-bottom: 0.25rem;
+}
+
+.instructions-list li span {
+  color: #718096;
+  font-size: 0.875rem;
+}
+
+/* Status Colors */
+.status-present { background: #c6f6d5; color: #276749; }
+.status-late { background: #fed7d7; color: #c53030; }
+.status-absent { background: #fed7d7; color: #c53030; }
+
+/* Buttons */
+.btn-reset {
+  background: #ed8936;
+  color: white;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-reset:hover {
+  background: #dd6b20;
+}
+
+/* Attendance Meta */
+.attendance-meta {
+  background: #f7fafc;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-top: 1rem;
+}
+
+.attendance-meta p {
+  margin: 0.25rem 0;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .recognition-container {
+    grid-template-columns: 1fr;
+  }
+  
+  .camera-controls {
+    flex-direction: column;
+  }
+  
+  .tech-badges {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
