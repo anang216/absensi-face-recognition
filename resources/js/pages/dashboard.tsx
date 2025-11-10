@@ -1,183 +1,702 @@
-import React from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Head } from '@inertiajs/react';
 import AppLayout from '@/layouts/app-layout';
 import { type BreadcrumbItem } from '@/types';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
-  XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area,
-  RadialBarChart, RadialBar, Legend
-} from 'recharts';
+import * as faceapi from 'face-api.js';
+import axios from 'axios';
 
 const breadcrumbs: BreadcrumbItem[] = [
   { title: 'Dashboard', href: '/dashboard' },
+  { title: 'Absensi Face Recognition', href: '/attendance/face-recognition' },
 ];
 
-const summaryData = [
-  { label: 'Users', value: 420, color: '#4ade80' },
-  { label: 'Backups', value: 80, color: '#f472b6' },
-  { label: 'Activity Logs', value: 1570, color: '#38bdf8' },
+// Mock data - dalam real implementation, ini dari API
+const MOCK_STUDENTS: Student[] = [
+  {
+    id: '1',
+    nim: '2022071001',
+    name: 'Ahmad Rizki',
+    program: 'Teknik Informatika',
+    semester: 6,
+    photo: '/images/students/student1.jpg'
+  },
+  {
+    id: '2', 
+    nim: '2022071002',
+    name: 'Sarah Wijaya',
+    program: 'Sistem Informasi',
+    semester: 5,
+    photo: '/images/students/student2.jpg'
+  }
 ];
 
-const monthlyData = [
-  { name: 'Jan', Users: 50, Backups: 10 },
-  { name: 'Feb', Users: 120, Backups: 25 },
-  { name: 'Mar', Users: 80, Backups: 15 },
-  { name: 'Apr', Users: 150, Backups: 30 },
-  { name: 'May', Users: 90, Backups: 20 },
-  { name: 'Jun', Users: 170, Backups: 35 },
-];
+export default function FaceRecognitionAttendance() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const detectionIntervalRef = useRef<NodeJS.Timeout>();
+  
+  const [state, setState] = useState<FaceRecognitionState>({
+    isCameraActive: false,
+    isLoading: false,
+    isModelLoaded: false,
+    attendanceStatus: 'idle',
+    errorMessage: '',
+    detectedStudent: null,
+    attendanceHistory: [],
+    stats: {
+      totalStudents: 0,
+      presentToday: 0,
+      lateToday: 0,
+      absentToday: 0,
+      attendanceRate: 0
+    }
+  });
 
-const pieData = [
-  { name: 'Admin', value: 20, color: '#fbbf24' },
-  { name: 'User', value: 80, color: '#a78bfa' },
-];
+  // Load FaceAPI models
+  const loadModels = useCallback(async () => {
+    try {
+      setState(prev => ({ ...prev, isLoading: true }));
+      
+      const MODEL_URL = '/models';
+      
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
+      ]);
+      
+      setState(prev => ({ ...prev, isModelLoaded: true, isLoading: false }));
+      console.log('FaceAPI models loaded successfully');
+    } catch (error) {
+      console.error('Error loading models:', error);
+      setState(prev => ({ 
+        ...prev, 
+        isLoading: false, 
+        errorMessage: 'Gagal memuat model AI' 
+      }));
+    }
+  }, []);
 
-const areaData = [
-  { month: 'Jan', users: 400, backups: 100 },
-  { month: 'Feb', users: 300, backups: 150 },
-  { month: 'Mar', users: 500, backups: 200 },
-  { month: 'Apr', users: 700, backups: 250 },
-];
+  // Initialize camera
+  const startCamera = async () => {
+    try {
+      if (!state.isModelLoaded) {
+        await loadModels();
+      }
 
-const radialData = [
-  { name: 'A', value: 100, fill: '#8884d8' },
-  { name: 'B', value: 80, fill: '#83a6ed' },
-  { name: 'C', value: 50, fill: '#8dd1e1' },
-];
+      setState(prev => ({ ...prev, isLoading: true }));
+      
+      const constraints = {
+        video: { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+          facingMode: 'user'
+        } 
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        
+        setState(prev => ({ 
+          ...prev, 
+          isCameraActive: true, 
+          isLoading: false 
+        }));
+        
+        // Start face detection
+        startFaceDetection();
+      }
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      setState(prev => ({ 
+        ...prev, 
+        isLoading: false, 
+        errorMessage: 'Tidak dapat mengakses kamera. Pastikan izin diberikan.' 
+      }));
+    }
+  };
 
-const COLORS = ['#0ea5e9', '#14b8a6', '#f97316', '#9333ea'];
+  // Face detection logic
+  const startFaceDetection = () => {
+    detectionIntervalRef.current = setInterval(async () => {
+      if (!videoRef.current || !canvasRef.current || state.attendanceStatus === 'success') {
+        return;
+      }
 
-export default function Dashboard() {
+      try {
+        const detections = await faceapi
+          .detectAllFaces(
+            videoRef.current, 
+            new faceapi.TinyFaceDetectorOptions()
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptors()
+          .withFaceExpressions();
+
+        const canvas = canvasRef.current;
+        const displaySize = {
+          width: videoRef.current.videoWidth,
+          height: videoRef.current.videoHeight
+        };
+        
+        faceapi.matchDimensions(canvas, displaySize);
+        
+        if (detections.length > 0) {
+          setState(prev => ({ ...prev, attendanceStatus: 'detecting' }));
+          
+          // Draw detections
+          const resizedDetections = faceapi.resizeResults(detections, displaySize);
+          canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+          faceapi.draw.drawDetections(canvas, resizedDetections);
+          faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+          
+          // Process face recognition
+          await processFaceRecognition(detections[0].descriptor);
+        } else {
+          setState(prev => ({ ...prev, attendanceStatus: 'no_face' }));
+          canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      } catch (error) {
+        console.error('Face detection error:', error);
+      }
+    }, 1000); // Check every second
+  };
+
+  // Face recognition logic
+  const processFaceRecognition = async (faceDescriptor: Float32Array) => {
+    try {
+      // In real implementation, compare with stored face descriptors from database
+      const matchedStudent = await recognizeFace(faceDescriptor);
+      
+      if (matchedStudent) {
+        setState(prev => ({ 
+          ...prev, 
+          attendanceStatus: 'success', 
+          detectedStudent: matchedStudent,
+          isLoading: false 
+        }));
+        
+        // Save attendance record
+        await saveAttendanceRecord(matchedStudent);
+        
+        // Stop detection after success
+        if (detectionIntervalRef.current) {
+          clearInterval(detectionIntervalRef.current);
+        }
+        
+        // Auto reset after 5 seconds
+        setTimeout(() => {
+          resetRecognition();
+        }, 5000);
+      }
+    } catch (error) {
+      console.error('Face recognition error:', error);
+      setState(prev => ({ 
+        ...prev, 
+        attendanceStatus: 'error',
+        errorMessage: 'Gagal mengenali wajah' 
+      }));
+    }
+  };
+
+  // Face recognition matching (simplified - replace with real matching logic)
+  const recognizeFace = async (descriptor: Float32Array): Promise<Student | null> => {
+    // Simulate API call delay
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Mock recognition - in real app, compare with database descriptors
+    const randomStudent = MOCK_STUDENTS[Math.floor(Math.random() * MOCK_STUDENTS.length)];
+    
+    // Simulate confidence score
+    const confidence = Math.random() * 0.3 + 0.7; // 0.7 - 1.0
+    
+    if (confidence > 0.8) {
+      return randomStudent;
+    }
+    
+    return null;
+  };
+
+  // Save attendance record
+  const saveAttendanceRecord = async (student: Student) => {
+    try {
+      const record: AttendanceRecord = {
+        id: Date.now().toString(),
+        studentId: student.id,
+        studentName: student.name,
+        nim: student.nim,
+        timestamp: new Date(),
+        status: new Date().getHours() > 8 ? 'late' : 'present',
+        confidence: 0.95
+      };
+      
+      // Simulate API call
+      await axios.post('/api/attendance', record);
+      
+      // Update local state
+      setState(prev => ({
+        ...prev,
+        attendanceHistory: [record, ...prev.attendanceHistory.slice(0, 9)]
+      }));
+      
+      updateStatistics();
+    } catch (error) {
+      console.error('Error saving attendance:', error);
+    }
+  };
+
+  // Update statistics
+  const updateStatistics = () => {
+    setState(prev => ({
+      ...prev,
+      stats: {
+        totalStudents: MOCK_STUDENTS.length,
+        presentToday: prev.stats.presentToday + 1,
+        lateToday: new Date().getHours() > 8 ? prev.stats.lateToday + 1 : prev.stats.lateToday,
+        absentToday: 0,
+        attendanceRate: ((prev.stats.presentToday + 1) / MOCK_STUDENTS.length) * 100
+      }
+    }));
+  };
+
+  // Reset recognition
+  const resetRecognition = () => {
+    setState(prev => ({
+      ...prev,
+      attendanceStatus: 'idle',
+      detectedStudent: null,
+      errorMessage: ''
+    }));
+    
+    if (state.isCameraActive) {
+      startFaceDetection();
+    }
+  };
+
+  // Stop camera
+  const stopCamera = () => {
+    if (detectionIntervalRef.current) {
+      clearInterval(detectionIntervalRef.current);
+    }
+    
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    
+    if (canvasRef.current) {
+      canvasRef.current.getContext('2d')?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+    
+    setState(prev => ({
+      ...prev,
+      isCameraActive: false,
+      attendanceStatus: 'idle',
+      detectedStudent: null
+    }));
+  };
+
+  // Manual capture for testing
+  const manualCapture = async () => {
+    if (!videoRef.current) return;
+    
+    try {
+      setState(prev => ({ ...prev, isLoading: true }));
+      
+      const detections = await faceapi
+        .detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+      
+      if (detections.length > 0) {
+        await processFaceRecognition(detections[0].descriptor);
+      } else {
+        setState(prev => ({ 
+          ...prev, 
+          attendanceStatus: 'no_face',
+          errorMessage: 'Tidak terdeteksi wajah' 
+        }));
+      }
+    } catch (error) {
+      console.error('Manual capture error:', error);
+    } finally {
+      setState(prev => ({ ...prev, isLoading: false }));
+    }
+  };
+
+  // Load initial data
+  useEffect(() => {
+    loadModels();
+    loadAttendanceHistory();
+  }, []);
+
+  const loadAttendanceHistory = async () => {
+    // Simulate API call
+    const mockHistory: AttendanceRecord[] = [
+      {
+        id: '1',
+        studentId: '1',
+        studentName: 'Ahmad Rizki',
+        nim: '2022071001',
+        timestamp: new Date('2024-01-16T08:15:00'),
+        status: 'present',
+        confidence: 0.92
+      }
+    ];
+    
+    setState(prev => ({ ...prev, attendanceHistory: mockHistory }));
+  };
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (detectionIntervalRef.current) {
+        clearInterval(detectionIntervalRef.current);
+      }
+      stopCamera();
+    };
+  }, []);
+
   return (
     <AppLayout breadcrumbs={breadcrumbs}>
-      <Head title="Dashboard" />
-      <div className="flex flex-col gap-6 p-4">
-        {/* Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {summaryData.map((item, index) => (
-            <Card key={index} className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-              <CardHeader className="px-4 py-3">
-                <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">{item.label}</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 py-2 text-3xl font-bold text-gray-900 dark:text-gray-100">{item.value}</CardContent>
-            </Card>
-          ))}
+      <Head title="Absensi Face Recognition - LPPM Asaindo" />
+
+      {/* Hero Section */}
+      <section className="hero-attendance">
+        <div className="hero-overlay"></div>
+        <div className="hero-container-attendance">
+          <div className="hero-text-content">
+            <h1 className="welcome-attendance-title">Absensi Face Recognition</h1>
+            <p className="hero-tagline">
+              Sistem absensi modern dengan teknologi AI untuk akurasi dan keamanan maksimal.
+            </p>
+            <div className="tech-badges">
+              <span className="tech-badge">TensorFlow.js</span>
+              <span className="tech-badge">Face-api.js</span>
+              <span className="tech-badge">Real-time AI</span>
+            </div>
+          </div>
+          <div className="hero-image-attendance"></div>
         </div>
+      </section>
 
-        {/* Charts */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Bar Chart */}
-          <Card className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">Monthly Activity</CardTitle>
-            </CardHeader>
-            <CardContent className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={monthlyData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                  <XAxis dataKey="name" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="Users" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Backups" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+      {/* Face Recognition Section */}
+      <section className="face-recognition-section">
+        <div className="container-lppm">
+          <div className="recognition-header">
+            <div className="header-icon">
+              <i className="fas fa-robot"></i>
+            </div>
+            <h2 className="section-title">Sistem Absensi AI</h2>
+            <p className="section-subtitle">
+              Teknologi pengenalan wajah dengan akurasi tinggi untuk proses absensi yang cepat dan aman.
+            </p>
+            
+            <div className="model-status">
+              <span className={`status-badge ${state.isModelLoaded ? 'loaded' : 'loading'}`}>
+                <i className={`fas ${state.isModelLoaded ? 'fa-check-circle' : 'fa-spinner fa-spin'}`}></i>
+                {state.isModelLoaded ? 'Model AI Loaded' : 'Loading AI Models...'}
+              </span>
+            </div>
+          </div>
 
-          {/* Line Chart */}
-          <Card className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">Monthly Trends</CardTitle>
-            </CardHeader>
-            <CardContent className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthlyData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                  <XAxis dataKey="name" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="Users" stroke="#22c55e" strokeWidth={2} />
-                  <Line type="monotone" dataKey="Backups" stroke="#f43f5e" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+          <div className="recognition-container">
+            <div className="camera-section">
+              <div className="camera-wrapper">
+                {!state.isCameraActive ? (
+                  <div className="camera-placeholder">
+                    <i className="fas fa-camera fa-4x"></i>
+                    <p>Kamera siap diaktifkan</p>
+                    <button 
+                      onClick={startCamera}
+                      disabled={state.isLoading || !state.isModelLoaded}
+                      className="btn-start-camera"
+                    >
+                      {state.isLoading ? 'Memulai...' : 'Aktifkan Kamera'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="camera-active">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="camera-feed"
+                    />
+                    <canvas 
+                      ref={canvasRef} 
+                      className="detection-canvas"
+                    />
+                    
+                    <div className="face-overlay">
+                      <div className="face-frame"></div>
+                      <p>Posisikan wajah dalam frame</p>
+                    </div>
 
-          {/* Pie Chart */}
-          <Card className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">User Roles</CardTitle>
-            </CardHeader>
-            <CardContent className="h-[300px] flex items-center justify-center">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={80}
-                    label
-                  >
-                    {pieData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+                    {/* Detection Status */}
+                    <div className="detection-status">
+                      {state.attendanceStatus === 'detecting' && (
+                        <div className="status-detecting">
+                          <i className="fas fa-search fa-spin"></i>
+                          <span>Mendeteksi wajah...</span>
+                        </div>
+                      )}
+                      {state.attendanceStatus === 'no_face' && (
+                        <div className="status-no-face">
+                          <i className="fas fa-user-slash"></i>
+                          <span>Tidak terdeteksi wajah</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
 
-          {/* Area Chart */}
-          <Card className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">Resource Usage</CardTitle>
-            </CardHeader>
-            <CardContent className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={areaData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                  <XAxis dataKey="month" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" />
-                  <Tooltip />
-                  <Area type="monotone" dataKey="users" stroke="#8884d8" fill="#c6dae7" />
-                  <Area type="monotone" dataKey="backups" stroke="#82ca9d" fill="#b7e4c7" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+              <div className="camera-controls">
+                {state.isCameraActive && (
+                  <>
+                    <button 
+                      onClick={manualCapture}
+                      disabled={state.isLoading}
+                      className="btn-capture"
+                    >
+                      <i className="fas fa-camera"></i>
+                      Capture Manual
+                    </button>
+                    <button 
+                      onClick={resetRecognition}
+                      className="btn-reset"
+                    >
+                      <i className="fas fa-redo"></i>
+                      Reset
+                    </button>
+                    <button 
+                      onClick={stopCamera}
+                      className="btn-stop-camera"
+                    >
+                      <i className="fas fa-stop"></i>
+                      Stop Kamera
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
 
-          {/* Radial Bar Chart */}
-          <Card className="md:col-span-2 bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-lg font-semibold text-gray-800 dark:text-white">Performance Metrics</CardTitle>
-            </CardHeader>
-            <CardContent className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <RadialBarChart
-                  innerRadius="30%"
-                  outerRadius="80%"
-                  data={radialData}
-                  startAngle={180}
-                  endAngle={0}
-                >
-                  <RadialBar
-                    dataKey="value"
-                    cornerRadius={10}
-                    label={{ fill: '#fff', position: 'insideStart' }}
-                  />
-                  <Legend iconSize={10} layout="horizontal" verticalAlign="bottom" align="center" />
-                  <Tooltip />
-                </RadialBarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+            <div className="attendance-info">
+              {/* Recognition Result */}
+              <div className="info-card">
+                <h3>Hasil Pengenalan</h3>
+                
+                {state.attendanceStatus === 'idle' && !state.detectedStudent && (
+                  <div className="status-idle">
+                    <i className="fas fa-user-clock"></i>
+                    <p>Menunggu deteksi wajah...</p>
+                  </div>
+                )}
+
+                {state.attendanceStatus === 'detecting' && (
+                  <div className="status-detecting">
+                    <i className="fas fa-search fa-spin"></i>
+                    <p>Menganalisis wajah...</p>
+                    <div className="loading-bar">
+                      <div className="loading-progress"></div>
+                    </div>
+                  </div>
+                )}
+
+                {state.attendanceStatus === 'success' && state.detectedStudent && (
+                  <div className="status-success">
+                    <div className="success-header">
+                      <i className="fas fa-check-circle"></i>
+                      <h4>Absensi Berhasil!</h4>
+                    </div>
+                    <div className="student-info">
+                      <div className="student-avatar">
+                        <img src={state.detectedStudent.photo} alt={state.detectedStudent.name} />
+                      </div>
+                      <div className="student-details">
+                        <p><strong>Nama:</strong> {state.detectedStudent.name}</p>
+                        <p><strong>NIM:</strong> {state.detectedStudent.nim}</p>
+                        <p><strong>Program:</strong> {state.detectedStudent.program}</p>
+                        <p><strong>Semester:</strong> {state.detectedStudent.semester}</p>
+                      </div>
+                    </div>
+                    <div className="attendance-meta">
+                      <p><strong>Waktu:</strong> {new Date().toLocaleString('id-ID')}</p>
+                      <p><strong>Status:</strong> <span className="status-present">Hadir</span></p>
+                    </div>
+                  </div>
+                )}
+
+                {state.attendanceStatus === 'error' && (
+                  <div className="status-error">
+                    <i className="fas fa-exclamation-circle"></i>
+                    <h4>Gagal Mengenali</h4>
+                    <p>{state.errorMessage || 'Terjadi kesalahan dalam pengenalan wajah'}</p>
+                    <button className="btn-retry" onClick={resetRecognition}>
+                      Coba Lagi
+                    </button>
+                  </div>
+                )}
+
+                {state.attendanceStatus === 'no_face' && (
+                  <div className="status-no-face">
+                    <i className="fas fa-user-slash"></i>
+                    <h4>Wajah Tidak Terdeteksi</h4>
+                    <p>Pastikan wajah terlihat jelas dalam frame</p>
+                    <button className="btn-retry" onClick={resetRecognition}>
+                      Coba Lagi
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Instructions */}
+              <div className="instructions-card">
+                <h3>Petunjuk Penggunaan</h3>
+                <ul className="instructions-list">
+                  <li>
+                    <i className="fas fa-lightbulb"></i>
+                    <div>
+                      <strong>Pencahayaan cukup</strong>
+                      <span>Hindari bayangan pada wajah</span>
+                    </div>
+                  </li>
+                  <li>
+                    <i className="fas fa-user"></i>
+                    <div>
+                      <strong>Posisi wajah lurus</strong>
+                      <span>Hadap langsung ke kamera</span>
+                    </div>
+                  </li>
+                  <li>
+                    <i className="fas fa-glasses"></i>
+                    <div>
+                      <strong>Hindari aksesoris</strong>
+                      <span>Lepaskan kacamata gelap/topi</span>
+                    </div>
+                  </li>
+                  <li>
+                    <i className="fas fa-expand"></i>
+                    <div>
+                      <strong>Jarak optimal</strong>
+                      <span>50-100 cm dari kamera</span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
+
+      {/* Real-time Statistics */}
+      <section className="attendance-stats">
+        <div className="container-lppm">
+          <h2 className="section-title">Statistik Real-time</h2>
+          
+          <div className="stats-cards-wrapper">
+            <div className="stat-card">
+              <div className="stat-icon bg-blue">
+                <i className="fas fa-users"></i>
+              </div>
+              <div className="stat-content">
+                <h3>{state.stats.totalStudents}</h3>
+                <p>Total Mahasiswa</p>
+              </div>
+            </div>
+
+            <div className="stat-card">
+              <div className="stat-icon bg-green">
+                <i className="fas fa-user-check"></i>
+              </div>
+              <div className="stat-content">
+                <h3>{state.stats.presentToday}</h3>
+                <p>Hadir Hari Ini</p>
+                <span className="stat-percentage">{state.stats.attendanceRate.toFixed(1)}%</span>
+              </div>
+            </div>
+
+            <div className="stat-card">
+              <div className="stat-icon bg-orange">
+                <i className="fas fa-clock"></i>
+              </div>
+              <div className="stat-content">
+                <h3>{state.stats.lateToday}</h3>
+                <p>Terlambat</p>
+              </div>
+            </div>
+
+            <div className="stat-card">
+              <div className="stat-icon bg-red">
+                <i className="fas fa-user-times"></i>
+              </div>
+              <div className="stat-content">
+                <h3>{state.stats.absentToday}</h3>
+                <p>Tidak Hadir</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Attendance History */}
+      <section className="attendance-history">
+        <div className="container-lppm">
+          <h2 className="section-title">Riwayat Absensi Terbaru</h2>
+
+          <div className="attendance-table-wrapper">
+            <table className="attendance-table">
+              <thead>
+                <tr>
+                  <th>Nama Mahasiswa</th>
+                  <th>NIM</th>
+                  <th>Waktu Absensi</th>
+                  <th>Status</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.attendanceHistory.map(record => (
+                  <tr key={record.id}>
+                    <td>
+                      <div className="student-cell">
+                        <img src={MOCK_STUDENTS.find(s => s.id === record.studentId)?.photo || ''} 
+                             alt={record.studentName} 
+                             className="student-thumb" />
+                        {record.studentName}
+                      </div>
+                    </td>
+                    <td>{record.nim}</td>
+                    <td>{record.timestamp.toLocaleString('id-ID')}</td>
+                    <td>
+                      <span className={`status-${record.status}`}>
+                        {record.status === 'present' ? 'Hadir' : 
+                         record.status === 'late' ? 'Terlambat' : 'Tidak Hadir'}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="confidence-bar">
+                        <div 
+                          className="confidence-fill" 
+                          style={{ width: `${record.confidence * 100}%` }}
+                        ></div>
+                        <span>{(record.confidence * 100).toFixed(1)}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </AppLayout>
   );
 }
